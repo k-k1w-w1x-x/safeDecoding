@@ -193,8 +193,6 @@ class Chat:
 
         
         return output_texts, full_texts
-            
-
     def validate_conversation(self, conversation=None):
         # validate the conversation format, return the conversation in OpenAI chat format
 
@@ -270,4 +268,218 @@ class Chat:
                                              max_length=self.max_length - max_new_tokens, truncation=True)
 
         return string_input, tokens_input
+class SafeChat(Chat):
+    def __init__(self, model,expert_model, prompt_style, tokenizer, max_length=2048, 
+                 init_conversation = None, init_system_prompt = None):
+        
+        if init_conversation is not None and init_system_prompt is not None:
+            raise ValueError("init_conversation and init_system_prompt cannot be provided at the same time")
+       
+        self.model = model
+        self.expert_model = expert_model
+        self.prompt_style = prompt_style
+        self.tokenizer = tokenizer
+        self.max_length = max_length # limit the length of the whole conversation
+        
 
+        # formatter will be used to convert openai chat format to string
+        if prompt_style == 'llama2':
+            from finetuning_buckets.models.model_families.llama2 import LlamaStringConverter, default_system_prompt
+            self.string_formatter = LlamaStringConverter.string_formatter_completion_only 
+            self.default_system_prompt = default_system_prompt
+            self.stopping_criteria = None
+        elif prompt_style == 'gemma':
+            from finetuning_buckets.models.model_families.gemma import GemmaStringConverter, default_system_prompt
+            self.string_formatter = GemmaStringConverter.string_formatter_completion_only 
+            self.default_system_prompt = default_system_prompt
+            self.stopping_criteria = None
+        elif prompt_style == 'llama2_base':
+            from finetuning_buckets.models.model_families.llama2_base import LlamaStringConverter, default_system_prompt, base_stopping_criteria
+            self.string_formatter = LlamaStringConverter.string_formatter_completion_only 
+            self.default_system_prompt = default_system_prompt
+            self.stopping_criteria = base_stopping_criteria
+        elif prompt_style == 'gemma_base':
+            from finetuning_buckets.models.model_families.gemma_base import GemmaStringConverter, default_system_prompt, base_stopping_criteria
+            self.string_formatter = GemmaStringConverter.string_formatter_completion_only
+            self.default_system_prompt = default_system_prompt
+            self.stopping_criteria = base_stopping_criteria
+        else:
+            raise ValueError(f"Prompt style {prompt_style} not supported")
+
+
+        if init_conversation is not None:
+            self.validate_conversation(init_conversation)
+            if isinstance(init_conversation, dict):
+                init_conversation = init_conversation['messages']
+
+            if init_conversation[-1]['role'] == 'user':
+                raise ValueError("the last message of init_conversation should be assistant message or system prompt, not user message")
+
+            if init_conversation[0]['role'] != 'system':
+                self.system_prompt = self.default_system_prompt
+                self.converstaion = self.init_conversation() + init_conversation
+            else:
+                self.system_prompt = init_conversation[0]['content']
+                self.converstaion = init_conversation
+        else:
+
+            if init_system_prompt is not None:
+                self.system_prompt = init_system_prompt
+            else:
+                self.system_prompt = self.default_system_prompt
+            
+            self.converstaion = self.init_conversation()
+    def safe_decoding(self,tensor1, tensor2,C,alpha):
+        tensor2=tensor2.to(tensor1.device)
+        n = min(tensor1.size(0), tensor2.size(0))
+        left, right = 1, n
+        ans_k = None
+        while left <= right:
+            mid = (left + right) // 2
+            indices1 = set(torch.topk(tensor1, mid).indices.tolist())
+            indices2 = set(torch.topk(tensor2, mid).indices.tolist())
+            if len(indices1 & indices2) >= C:
+                ans_k = mid
+                right = mid - 1
+            else:
+                left = mid + 1
+
+        if ans_k is None:
+            return None, None  # 若没有满足条件的 k
+
+        # 获取最终的交集
+        indices1 = set(torch.topk(tensor1, ans_k).indices.tolist())
+        indices2 = set(torch.topk(tensor2, ans_k).indices.tolist())
+        intersection = indices1 & indices2
+        # print(tensor1.shape,tensor2.shape)
+        # 在交集内，找到 (tensor1 - tensor2) 差值最大的下标
+        max_index = max(intersection, key=lambda idx: tensor1[idx] +  alpha*(tensor2[idx] - tensor1[idx]))
+        # probabilities = probabilities + alpha*(expert_probabilities.to(probabilities.device) - probabilities)
+        # print(max_index)
+        return ans_k, max_index
+    def generate_one_shot_in_batch_by_safeDecoding(self, inputs, accelerator, max_new_tokens = 1024, 
+                 do_sample = True, top_p = 0.9, temperature = 0.6, use_cache = True, top_k = 50,
+                 repetition_penalty = 1.0, length_penalty = 1.0,C=5,M=10,alpha=5.0, **kwargs):
+        # a one-shot conversation, input can be a string, a list of messages, or a dictionary with 'messages' key
+        # no history will be maintained for one-shot conversation
+        # this function is for batch inference to accelerate the evaluation
+        
+        inputs_processed = []
+
+        for item in inputs:
+
+            if isinstance(item, dict) or isinstance(item, list):
+                item_processed = self.validate_conversation(item)
+            elif isinstance(item, str):
+                item_processed = self.init_conversation() + [{'role': 'user', 'content': input}, {'role': 'assistant', 'content': ''}]
+            else:
+                raise ValueError(f"input {item} is not a valid conversation input")
+            
+            item_processed = self.string_formatter({'messages': item_processed})['text']
+
+            inputs_processed.append(item_processed)
+        
+
+        model_inputs = self.tokenizer(inputs_processed, padding = True, return_tensors="pt").to(self.model.device)
+        # 初始化生成的输入（假设model_inputs是初始输入）
+        generated_ids = model_inputs['input_ids']
+        attention_mask = model_inputs['attention_mask']
+
+        # wxk
+        for step in range(M):
+            # 模型前向传播
+            # print(type(generated_ids))
+            outputs = self.model(
+                input_ids=generated_ids,
+                attention_mask=attention_mask,
+                return_dict=True
+            )
+            expert_outputs = self.expert_model(
+                input_ids=generated_ids.to(self.expert_model.device),
+                attention_mask=attention_mask.to(self.expert_model.device),
+                return_dict=True
+            )
+
+            logits = outputs.logits
+            expert_logits = expert_outputs.logits
+            # 获取最后一个token的logits
+            last_token_logits = logits[0, -1, :]
+            expert_last_token_logits =  expert_logits[0, -1, :]
+
+            assert(last_token_logits.shape == expert_last_token_logits.shape)
+
+            # # 应用logits处理器（温度、top-p、重复惩罚等）
+            # for processor in logits_processor:
+            #     last_token_logits = processor(generated_ids, last_token_logits)
+
+            # 转换为概率
+            probabilities = torch.nn.functional.softmax(last_token_logits, dim=-1)
+            expert_probabilities = torch.nn.functional.softmax(expert_last_token_logits, dim=-1)
+
+            # 执行算法，贪婪采样
+            k,next_token = self.safe_decoding(tensor1 = probabilities,tensor2 = expert_probabilities,C=C,alpha=alpha)
+
+            next_token = torch.Tensor([next_token]).to(generated_ids.device)
+            
+            # probabilities = probabilities + alpha*(expert_probabilities.to(probabilities.device) - probabilities)
+            # # --- 显示候选token概率 ---
+            # display_top_k = 10  # 显示前10个候选
+            # top_probs, top_indices = torch.topk(probabilities, display_top_k)
+            # top_tokens = self.tokenizer.convert_ids_to_tokens(top_indices.tolist())
+            
+            # print(f"\nStep {step + 1}:")
+            # for token, prob in zip(top_tokens, top_probs):
+            #     print(f"  {token}: {prob.item():.4f}")
+
+            # --- 选择下一个token ---
+            # next_token = torch.argmax(probabilities, dim=-1, keepdim=True)
+            # if do_sample:
+            #     # 采样模式（带概率分布）
+            #     next_token = torch.multinomial(probabilities, num_samples=1)
+            # else:
+            #     # 贪心模式（直接选最高概率）
+            #     next_token = torch.argmax(probabilities, dim=-1, keepdim=True)
+
+            # 终止条件：遇到EOS或达到最大长度
+            if next_token.item() == self.tokenizer.eos_token_id:
+                break
+
+            # 更新生成序列和attention mask
+            generated_ids = torch.cat([generated_ids, next_token.unsqueeze(0).long()], dim=-1)
+            attention_mask = torch.cat([attention_mask, torch.ones((1, 1), device=attention_mask.device)], dim=1)
+        
+        # model_inputs['input_ids']=generated_ids
+        # model_inputs['attention_mask']=attention_mask
+        outputs = self.model.generate(
+                input_ids = generated_ids,
+                attention_mask = attention_mask,
+                max_new_tokens=(max_new_tokens-M),
+                do_sample=do_sample,
+                top_p=top_p,
+                temperature=temperature,
+                use_cache=use_cache,
+                top_k=top_k,
+                repetition_penalty=repetition_penalty,
+                length_penalty=length_penalty,
+                stopping_criteria = self.stopping_criteria,
+                **kwargs
+            )
+        # print(model_inputs['input_ids'],outputs)
+        full_texts = [] # the whole conversation texts
+        output_texts = [] # the model output part texts
+
+        for i, item in enumerate(outputs):
+
+            input_pos = model_inputs['attention_mask'][i].nonzero()
+
+            input_length = input_pos.shape[0] # how many input tokens
+            start_pos = input_pos[0][0] # the first non-padding token
+
+            full_text = self.tokenizer.decode(item, skip_special_tokens=True)
+            output_text = self.tokenizer.decode(item[start_pos + input_length:], skip_special_tokens=True)
+
+            full_texts.append(full_text)
+            output_texts.append(output_text)
+
+        
+        return output_texts, full_texts

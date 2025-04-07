@@ -10,8 +10,8 @@ from finetuning_buckets.models import get_model
 
 from finetuning_buckets.trainer.trainer import ConstrainedSFTTrainer
 
-from datasets import set_caching_enabled
-set_caching_enabled(False)
+from datasets import disable_caching
+disable_caching()
 
 def disable_dropout(model: torch.nn.Module):
     """Disable dropout in a model."""

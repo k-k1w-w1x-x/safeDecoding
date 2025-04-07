@@ -7,8 +7,8 @@ import torch
 
 from finetuning_buckets.models import get_model
 from finetuning_buckets.inference.safety_eval import evaluator
-from datasets import set_caching_enabled
-set_caching_enabled(False)
+from datasets import disable_caching
+disable_caching()
 
 
 @dataclass
@@ -21,8 +21,8 @@ class ScriptArguments:
     save_path: str = field(default=None, metadata={"help": "the save path"})
     eval_template: str = field(default="plain", metadata={"help": "the eval template"})
 
-
-    batch_size_per_device: int = field(default=10, metadata={"help": "the batch size"})
+    # 修改batch
+    batch_size_per_device: int = field(default=1, metadata={"help": "the batch size"})
     max_new_tokens: int = field(default=512, metadata={"help": "the maximum number of new tokens"})
     do_sample: bool = field(default=True, metadata={"help": "do sample"})
     top_p: float = field(default=0.6, metadata={"help": "top p"})
@@ -59,7 +59,9 @@ if __name__ == "__main__":
         attn_implementation=model_config.attn_implementation,
         torch_dtype=torch_dtype,
         use_cache=False,
+        
         device_map=get_kbit_device_map() if quantization_config is not None else None,
+        
         quantization_config=quantization_config,
     )
 
@@ -68,7 +70,9 @@ if __name__ == "__main__":
     # Model & Tokenizer
     ################
 
-    model, tokenizer = get_model.get_model(model_config.model_name_or_path, model_kwargs, model_family=args.model_family, padding_side="left")
+    model, tokenizer = get_model.get_model(model_config.model_name_or_path, model_kwargs, model_family=args.model_family, padding_side="left" )
+    
+
     model.eval()
 
     eval_template = evaluator.common_eval_template[args.eval_template]
