@@ -9,6 +9,7 @@ from accelerate import Accelerator
 from torch.utils.data import DataLoader, Dataset
 from accelerate.state import PartialState
 import torch
+import time
 
 class MyDataset(Dataset):
     def __init__(self, data_list):
@@ -263,7 +264,7 @@ def eval_safety_in_batch_by_safeDecoding(model, expert_model,prompt_style, token
                 system_prompt = None, input_template = None, output_header = None, 
                 max_new_tokens = 512, 
                 do_sample = True, top_p = 0.9, temperature = 0.6, use_cache = True, top_k = 50,
-                repetition_penalty = 1.0, length_penalty = 1.0, **kwargs):
+                repetition_penalty = 1.0, length_penalty = 1.0, using_speculative = True,**kwargs):
     
     accelerator = Accelerator()
 
@@ -299,11 +300,11 @@ def eval_safety_in_batch_by_safeDecoding(model, expert_model,prompt_style, token
     data_loader = accelerator.prepare(DataLoader(dataset, **dataloader_params))
     
     # model = accelerator.prepare(model)
-    model.to("cuda:2")
+    model.to("cuda:0")
     model.eval()
     # wxk:封装成并行版本
     # expert_model = accelerator.prepare(expert_model)
-    expert_model.to("cuda:3")
+    expert_model.to("cuda:0")
     expert_model.eval()
     
 
@@ -313,6 +314,12 @@ def eval_safety_in_batch_by_safeDecoding(model, expert_model,prompt_style, token
 
     results = []
     cnt = 0
+    start_decoding_time=time.time()
+    if kwargs.get("cmd_log_path") is None:
+        print("decoding start time:",start_decoding_time,", not save cmd log")
+    else:   
+        with open(kwargs.get("cmd_log_path"), "w") as file:
+            file.write(f"程序的运行开始于: {start_decoding_time}秒\n")
 
     for batch in tqdm(data_loader):
     
@@ -320,12 +327,20 @@ def eval_safety_in_batch_by_safeDecoding(model, expert_model,prompt_style, token
        with torch.inference_mode():
             
             batch_input_sample = batch
-
-            output_texts, full_texts = Generator.generate_one_shot_in_batch_by_safeDecoding(inputs = batch_input_sample, accelerator = accelerator,
-                                            max_new_tokens = max_new_tokens, do_sample = do_sample, top_p = top_p, temperature = temperature, 
-                                            use_cache = use_cache, top_k = top_k, repetition_penalty = repetition_penalty, 
-                                            length_penalty = length_penalty, **kwargs)
-
+            
+            # wxk
+            if not using_speculative:
+                print("not using speculative decoding")
+                output_texts, full_texts = Generator.generate_one_shot_in_batch_by_safeDecoding(inputs = batch_input_sample, accelerator = accelerator,
+                                                max_new_tokens = max_new_tokens, do_sample = do_sample, top_p = top_p, temperature = temperature, 
+                                                use_cache = use_cache, top_k = top_k, repetition_penalty = repetition_penalty, 
+                                                length_penalty = length_penalty, **kwargs)
+            else:
+                print("using speculative decoding")
+                output_texts, full_texts = Generator.generate_one_shot_in_batch_by_safeDecoding_with_speculative_decoding(inputs = batch_input_sample, accelerator = accelerator,
+                                                max_new_tokens = max_new_tokens, do_sample = do_sample, top_p = top_p, temperature = temperature, 
+                                                use_cache = use_cache, top_k = top_k, repetition_penalty = repetition_penalty, 
+                                                length_penalty = length_penalty, **kwargs)
             accelerator.wait_for_everyone()
 
 
@@ -353,7 +368,13 @@ def eval_safety_in_batch_by_safeDecoding(model, expert_model,prompt_style, token
 
 
 
-
+    end_decoding_time=time.time()
+    if kwargs.get("cmd_log_path") is None:
+        print("decoding time:",end_decoding_time-start_decoding_time)
+    else:
+        with open(kwargs.get("cmd_log_path"), "w") as file:
+            file.write(f"程序的运行时间是: {end_decoding_time-start_decoding_time}秒\n")
+    
     results_serialized = torch.tensor( bytearray( json.dumps(results).encode('utf-8') ), dtype=torch.uint8 ).to(accelerator.device)
     results_serialized = results_serialized.unsqueeze(0)
     results_serialized = accelerator.pad_across_processes(results_serialized, dim=1, pad_index=0)

@@ -359,11 +359,13 @@ class SafeChat(Chat):
         return ans_k, max_index
     def generate_one_shot_in_batch_by_safeDecoding(self, inputs, accelerator, max_new_tokens = 1024, 
                  do_sample = True, top_p = 0.9, temperature = 0.6, use_cache = True, top_k = 50,
-                 repetition_penalty = 1.0, length_penalty = 1.0,C=5,M=10,alpha=5.0, **kwargs):
+                 repetition_penalty = 1.0, length_penalty = 1.0,C=5,M=1024,alpha=3.0, **kwargs):
         # a one-shot conversation, input can be a string, a list of messages, or a dictionary with 'messages' key
         # no history will be maintained for one-shot conversation
         # this function is for batch inference to accelerate the evaluation
         
+        print(f"max_new_tokens:{max_new_tokens}")
+        M = max_new_tokens
         inputs_processed = []
 
         for item in inputs:
@@ -384,6 +386,8 @@ class SafeChat(Chat):
         # 初始化生成的输入（假设model_inputs是初始输入）
         generated_ids = model_inputs['input_ids']
         attention_mask = model_inputs['attention_mask']
+
+        warning_flag1 = False
 
         # wxk
         for step in range(M):
@@ -406,8 +410,9 @@ class SafeChat(Chat):
             last_token_logits = logits[0, -1, :]
             expert_last_token_logits =  expert_logits[0, -1, :]
 
-            assert(last_token_logits.shape == expert_last_token_logits.shape)
-
+            if(last_token_logits.shape != expert_last_token_logits.shape and not warning_flag1):
+                print(f"warning:last_token_logits.shape is {last_token_logits.shape},while expert_last_token_logits.shape is {expert_last_token_logits.shape}")
+                warning_flag1=True
             # # 应用logits处理器（温度、top-p、重复惩罚等）
             # for processor in logits_processor:
             #     last_token_logits = processor(generated_ids, last_token_logits)
@@ -421,25 +426,6 @@ class SafeChat(Chat):
 
             next_token = torch.Tensor([next_token]).to(generated_ids.device)
             
-            # probabilities = probabilities + alpha*(expert_probabilities.to(probabilities.device) - probabilities)
-            # # --- 显示候选token概率 ---
-            # display_top_k = 10  # 显示前10个候选
-            # top_probs, top_indices = torch.topk(probabilities, display_top_k)
-            # top_tokens = self.tokenizer.convert_ids_to_tokens(top_indices.tolist())
-            
-            # print(f"\nStep {step + 1}:")
-            # for token, prob in zip(top_tokens, top_probs):
-            #     print(f"  {token}: {prob.item():.4f}")
-
-            # --- 选择下一个token ---
-            # next_token = torch.argmax(probabilities, dim=-1, keepdim=True)
-            # if do_sample:
-            #     # 采样模式（带概率分布）
-            #     next_token = torch.multinomial(probabilities, num_samples=1)
-            # else:
-            #     # 贪心模式（直接选最高概率）
-            #     next_token = torch.argmax(probabilities, dim=-1, keepdim=True)
-
             # 终止条件：遇到EOS或达到最大长度
             if next_token.item() == self.tokenizer.eos_token_id:
                 break
@@ -448,27 +434,139 @@ class SafeChat(Chat):
             generated_ids = torch.cat([generated_ids, next_token.unsqueeze(0).long()], dim=-1)
             attention_mask = torch.cat([attention_mask, torch.ones((1, 1), device=attention_mask.device)], dim=1)
         
-        # model_inputs['input_ids']=generated_ids
-        # model_inputs['attention_mask']=attention_mask
-        outputs = self.model.generate(
-                input_ids = generated_ids,
-                attention_mask = attention_mask,
-                max_new_tokens=(max_new_tokens-M),
-                do_sample=do_sample,
-                top_p=top_p,
-                temperature=temperature,
-                use_cache=use_cache,
-                top_k=top_k,
-                repetition_penalty=repetition_penalty,
-                length_penalty=length_penalty,
-                stopping_criteria = self.stopping_criteria,
-                **kwargs
-            )
-        # print(model_inputs['input_ids'],outputs)
+
+        # print(max_new_tokens-M)
+        # outputs = self.model.generate(
+        #         input_ids = generated_ids,
+        #         attention_mask = attention_mask,
+        #         max_new_tokens=(max_new_tokens-M),
+        #         do_sample=do_sample,
+        #         top_p=top_p,
+        #         temperature=temperature,
+        #         use_cache=use_cache,
+        #         top_k=top_k,
+        #         repetition_penalty=repetition_penalty,
+        #         length_penalty=length_penalty,
+        #         stopping_criteria = self.stopping_criteria,
+        #         **kwargs
+        #     )
+        # print(generated_ids.shape,outputs.shape)
         full_texts = [] # the whole conversation texts
         output_texts = [] # the model output part texts
 
-        for i, item in enumerate(outputs):
+        for i, item in enumerate(generated_ids):
+
+            input_pos = model_inputs['attention_mask'][i].nonzero()
+
+            input_length = input_pos.shape[0] # how many input tokens
+            start_pos = input_pos[0][0] # the first non-padding token
+
+            full_text = self.tokenizer.decode(item, skip_special_tokens=True)
+            output_text = self.tokenizer.decode(item[start_pos + input_length:], skip_special_tokens=True)
+
+            full_texts.append(full_text)
+            output_texts.append(output_text)
+
+        
+        return output_texts, full_texts
+    
+    def generate_one_shot_in_batch_by_safeDecoding_with_speculative_decoding(self, inputs, accelerator, max_new_tokens = 1024, 
+                do_sample = True, top_p = 0.9, temperature = 0.6, use_cache = True, top_k = 50,
+                repetition_penalty = 1.0, length_penalty = 1.0,C=5,M=1024,alpha=3.0, **kwargs):
+
+   
+        M = max_new_tokens
+        inputs_processed = []
+
+        for item in inputs:
+            if isinstance(item, dict) or isinstance(item, list):
+                item_processed = self.validate_conversation(item)
+            elif isinstance(item, str):
+                item_processed = self.init_conversation() + [{'role': 'user', 'content': input}, {'role': 'assistant', 'content': ''}]
+            else:
+                raise ValueError(f"input {item} is not a valid conversation input")
+            
+            item_processed = self.string_formatter({'messages': item_processed})['text']
+
+            inputs_processed.append(item_processed)
+        
+
+        model_inputs = self.tokenizer(inputs_processed, padding = True, return_tensors="pt").to(self.model.device)
+        generated_ids = model_inputs['input_ids']
+        attention_mask = model_inputs['attention_mask']
+        
+        num_speculate_tokens = 3
+        warning_flag1 = False
+
+        with torch.no_grad():
+            # 初始化生成过程
+            cur_len=0
+            while cur_len < M:
+                expert_probability_distributions=[]
+                expert_speculate_ids = []
+                raw_output = generated_ids
+                # 猜测的token
+                for _ in range(num_speculate_tokens):
+                    # 获取当前 token 的 logits
+                    outputs = self.expert_model(raw_output)
+                    logits = outputs.logits
+                    
+                    # 获取当前最后一个 token 的 logits（假设是 batch_size=1）
+                    last_token_logits = logits[0, -1, :]
+                    
+                    # 将 logits 转换为概率分布
+                    probabilities = torch.nn.functional.softmax(last_token_logits, dim=-1)
+                    
+                    # 保存当前的概率分布
+                    expert_probability_distributions.append(probabilities)
+                    
+                    # 贪婪选择最大概率的 token
+                    next_token = torch.argmax(probabilities, dim=-1)
+                    # print(f"next_token,{next_token.item(),next_token.shape}")
+                    # print(raw_output.shape)
+                    expert_speculate_ids.append(next_token.item())
+                    
+                    # 将选中的 token 添加到生成序列中(不需要最后一个)
+                    if _ != num_speculate_tokens-1:
+                        raw_output = torch.cat((raw_output, next_token.unsqueeze(0).unsqueeze(0)), dim=-1)
+                    # generated_expert_text = self.tokenizer.decode(expert_speculate_ids, skip_special_tokens=True)
+                    # print("\nGenerated expert text:", generated_expert_text)
+
+                outputs = self.model(
+                    input_ids=raw_output,
+                    attention_mask=attention_mask,
+                    return_dict=True
+                )
+
+                logits = outputs.logits
+                last_token_logits = logits[0, -num_speculate_tokens:, :]
+
+
+                # 转换为概率
+                probabilities = torch.nn.functional.softmax(last_token_logits, dim=-1)
+                for i in range(num_speculate_tokens):
+                    # 执行算法，贪婪采样
+                    correct_flag = False
+                    k,cur_token = self.safe_decoding(tensor1 = probabilities[i-num_speculate_tokens,:],tensor2 =expert_probability_distributions[i],C=C,alpha=alpha)
+                    if(cur_token == expert_speculate_ids[i]):
+                        correct_flag = True # 可以检查下一步
+                    cur_token = torch.Tensor([cur_token]).to(generated_ids.device)    
+                    generated_ids = torch.cat([generated_ids, cur_token.unsqueeze(0).long()], dim=-1)
+                    attention_mask = torch.cat([attention_mask, torch.ones((1, 1), device=attention_mask.device)], dim=1)
+                    cur_len += 1
+
+                    if(cur_len >= M):
+                        break
+                    if correct_flag == False:
+                        break
+                    # 终止条件：遇到EOS或达到最大长度
+                    if cur_token.item() == self.tokenizer.eos_token_id:
+                        break
+                    
+        full_texts = [] # the whole conversation texts
+        output_texts = [] # the model output part texts
+
+        for i, item in enumerate(generated_ids):
 
             input_pos = model_inputs['attention_mask'][i].nonzero()
 
