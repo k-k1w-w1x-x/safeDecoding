@@ -501,6 +501,7 @@ class SafeChat(Chat):
         with torch.no_grad():
             # 初始化生成过程
             cur_len=0
+            extra_match_tokens=0
             while cur_len < M:
                 expert_probability_distributions=[]
                 expert_speculate_ids = []
@@ -529,7 +530,7 @@ class SafeChat(Chat):
                     # 将选中的 token 添加到生成序列中(不需要最后一个)
                     if _ != num_speculate_tokens-1:
                         raw_output = torch.cat((raw_output, next_token.unsqueeze(0).unsqueeze(0)), dim=-1)
-                    # generated_expert_text = self.tokenizer.decode(expert_speculate_ids, skip_special_tokens=True)
+                    generated_expert_text = self.tokenizer.decode(expert_speculate_ids, skip_special_tokens=True)
                     # print("\nGenerated expert text:", generated_expert_text)
 
                 outputs = self.model(
@@ -544,15 +545,17 @@ class SafeChat(Chat):
 
                 # 转换为概率
                 probabilities = torch.nn.functional.softmax(last_token_logits, dim=-1)
+                cur_tokens=[]
                 for i in range(num_speculate_tokens):
                     # 执行算法，贪婪采样
                     correct_flag = False
                     k,cur_token = self.safe_decoding(tensor1 = probabilities[i-num_speculate_tokens,:],tensor2 =expert_probability_distributions[i],C=C,alpha=alpha)
                     if(cur_token == expert_speculate_ids[i]):
                         correct_flag = True # 可以检查下一步
-                    cur_token = torch.Tensor([cur_token]).to(generated_ids.device)    
-                    generated_ids = torch.cat([generated_ids, cur_token.unsqueeze(0).long()], dim=-1)
-                    attention_mask = torch.cat([attention_mask, torch.ones((1, 1), device=attention_mask.device)], dim=1)
+                    cur_token = torch.Tensor([cur_token]).to(generated_ids.device)   
+                    cur_tokens.append(cur_token) 
+                    # generated_ids = torch.cat([generated_ids, cur_token.unsqueeze(0).long()], dim=-1)
+                    # attention_mask = torch.cat([attention_mask, torch.ones((1, 1), device=attention_mask.device)], dim=1)
                     cur_len += 1
 
                     if(cur_len >= M):
@@ -562,7 +565,10 @@ class SafeChat(Chat):
                     # 终止条件：遇到EOS或达到最大长度
                     if cur_token.item() == self.tokenizer.eos_token_id:
                         break
-                    
+                extra_match_tokens +=  len(cur_tokens)-1
+                generated_ids = torch.cat([generated_ids, torch.stack(cur_tokens, dim=0)], dim=-1)
+                attention_mask = torch.cat([attention_mask, torch.ones((1, len(cur_tokens)), device=attention_mask.device)], dim=1)
+            print("extra_match_tokens:",extra_match_tokens)
         full_texts = [] # the whole conversation texts
         output_texts = [] # the model output part texts
 
