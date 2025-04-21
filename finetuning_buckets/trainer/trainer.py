@@ -593,8 +593,7 @@ class ConstrainedSFTTrainer(Trainer):
             compute_metrics=compute_metrics,
             callbacks=callbacks,
             optimizers=optimizers,
-            preprocess_logits_for_metrics=preprocess_logits_for_metrics,
-            start_time=getattr(args, "start_time", time.time())  # 添加 start_time 参数
+            preprocess_logits_for_metrics=preprocess_logits_for_metrics
         )
 
         self._precomputed_train_ref_log_probs = False

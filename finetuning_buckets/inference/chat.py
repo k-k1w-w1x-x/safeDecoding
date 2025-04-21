@@ -1,4 +1,5 @@
 import torch
+import time
 
 class Chat:
     # by default, will maintain all conversations in OpenAI chat format
@@ -160,7 +161,7 @@ class Chat:
 
         model_inputs = self.tokenizer(inputs_processed, padding = True, return_tensors="pt").to(self.model.device)
 
-        outputs = self.model.module.generate(
+        outputs = self.model.generate(
                 input_ids = model_inputs['input_ids'],
                 attention_mask = model_inputs['attention_mask'],
                 max_new_tokens=max_new_tokens,
@@ -364,7 +365,9 @@ class SafeChat(Chat):
         # no history will be maintained for one-shot conversation
         # this function is for batch inference to accelerate the evaluation
         
-        print(f"max_new_tokens:{max_new_tokens}")
+        print(f"max_new_tokens:{max_new_tokens},C:{C},M:{M},alpha:{alpha}")
+        function_start_time = time.time()
+
         M = max_new_tokens
         inputs_processed = []
 
@@ -391,8 +394,8 @@ class SafeChat(Chat):
 
         # wxk
         for step in range(M):
+            start_time = time.time()
             # 模型前向传播
-            # print(type(generated_ids))
             outputs = self.model(
                 input_ids=generated_ids,
                 attention_mask=attention_mask,
@@ -421,9 +424,12 @@ class SafeChat(Chat):
             probabilities = torch.nn.functional.softmax(last_token_logits, dim=-1)
             expert_probabilities = torch.nn.functional.softmax(expert_last_token_logits, dim=-1)
 
+            get_probabilities_time = time.time()
+            print(f"get_probabilities_time: {get_probabilities_time - start_time}")
             # 执行算法，贪婪采样
             k,next_token = self.safe_decoding(tensor1 = probabilities,tensor2 = expert_probabilities,C=C,alpha=alpha)
-
+            get_next_token_time = time.time()
+            print(f"get_next_token_time: {get_next_token_time - get_probabilities_time}")   
             next_token = torch.Tensor([next_token]).to(generated_ids.device)
             
             # 终止条件：遇到EOS或达到最大长度
@@ -433,23 +439,28 @@ class SafeChat(Chat):
             # 更新生成序列和attention mask
             generated_ids = torch.cat([generated_ids, next_token.unsqueeze(0).long()], dim=-1)
             attention_mask = torch.cat([attention_mask, torch.ones((1, 1), device=attention_mask.device)], dim=1)
+            end_time = time.time()
+            print(f"step {step} total time: {end_time - start_time}")
         
 
         # print(max_new_tokens-M)
-        # outputs = self.model.generate(
-        #         input_ids = generated_ids,
-        #         attention_mask = attention_mask,
-        #         max_new_tokens=(max_new_tokens-M),
-        #         do_sample=do_sample,
-        #         top_p=top_p,
-        #         temperature=temperature,
-        #         use_cache=use_cache,
-        #         top_k=top_k,
-        #         repetition_penalty=repetition_penalty,
-        #         length_penalty=length_penalty,
-        #         stopping_criteria = self.stopping_criteria,
-        #         **kwargs
-        #     )
+        if max_new_tokens-M > 0:
+            generated_ids = self.model.generate(
+                input_ids = generated_ids,
+                attention_mask = attention_mask,
+                max_new_tokens=(max_new_tokens-M),
+                do_sample=do_sample,
+                top_p=top_p,
+                temperature=temperature,
+                use_cache=use_cache,
+                top_k=top_k,
+                repetition_penalty=repetition_penalty,
+                length_penalty=length_penalty,
+                stopping_criteria = self.stopping_criteria,
+                **kwargs
+            )
+        generation_end_time = time.time()
+        print(f"generation time: {generation_end_time - function_start_time}")
         # print(generated_ids.shape,outputs.shape)
         full_texts = [] # the whole conversation texts
         output_texts = [] # the model output part texts
@@ -467,17 +478,19 @@ class SafeChat(Chat):
             full_texts.append(full_text)
             output_texts.append(output_text)
 
-        
+        function_end_time = time.time()
+        print(f"function time: {function_end_time - function_start_time}")
         return output_texts, full_texts
     
     def generate_one_shot_in_batch_by_safeDecoding_with_speculative_decoding(self, inputs, accelerator, max_new_tokens = 1024, 
                 do_sample = True, top_p = 0.9, temperature = 0.6, use_cache = True, top_k = 50,
-                repetition_penalty = 1.0, length_penalty = 1.0,C=5,M=1024,alpha=3.0, **kwargs):
+                repetition_penalty = 1.0, length_penalty = 1.0,C=5,M=1024,alpha=0.0001, **kwargs):
 
    
         M = max_new_tokens
+        print(f"max_new_tokens:{max_new_tokens},C:{C},M:{M},alpha:{alpha}")
         inputs_processed = []
-
+        # function_start_time = time.time()
         for item in inputs:
             if isinstance(item, dict) or isinstance(item, list):
                 item_processed = self.validate_conversation(item)
@@ -490,12 +503,13 @@ class SafeChat(Chat):
 
             inputs_processed.append(item_processed)
         
+        # print(f"inputs_processed:{inputs_processed}")
 
         model_inputs = self.tokenizer(inputs_processed, padding = True, return_tensors="pt").to(self.model.device)
         generated_ids = model_inputs['input_ids']
         attention_mask = model_inputs['attention_mask']
         
-        num_speculate_tokens = 3
+        num_speculate_tokens = 10
         warning_flag1 = False
 
         with torch.no_grad():
@@ -503,13 +517,22 @@ class SafeChat(Chat):
             cur_len=0
             extra_match_tokens=0
             while cur_len < M:
+                # start_time = time.time()
                 expert_probability_distributions=[]
                 expert_speculate_ids = []
-                raw_output = generated_ids
+                raw_output = generated_ids.to(self.expert_model.device)
+                prepared_attention_masks = [attention_mask]
+                for i in range(num_speculate_tokens):
+                    prepared_attention_masks.append(torch.cat([prepared_attention_masks[i],torch.ones((1, 1), device=attention_mask.device)],dim=-1))
+
                 # 猜测的token
                 for _ in range(num_speculate_tokens):
                     # 获取当前 token 的 logits
-                    outputs = self.expert_model(raw_output)
+                    outputs =self.expert_model(
+                    input_ids=raw_output.to(self.expert_model.device),
+                    attention_mask=prepared_attention_masks[_],
+                    return_dict=True
+                )
                     logits = outputs.logits
                     
                     # 获取当前最后一个 token 的 logits（假设是 batch_size=1）
@@ -530,45 +553,60 @@ class SafeChat(Chat):
                     # 将选中的 token 添加到生成序列中(不需要最后一个)
                     if _ != num_speculate_tokens-1:
                         raw_output = torch.cat((raw_output, next_token.unsqueeze(0).unsqueeze(0)), dim=-1)
-                    generated_expert_text = self.tokenizer.decode(expert_speculate_ids, skip_special_tokens=True)
+                    # generated_expert_text = self.tokenizer.decode(expert_speculate_ids, skip_special_tokens=True)
                     # print("\nGenerated expert text:", generated_expert_text)
+                
+                # get_speculate_time = time.time()
+                # print(f"get_speculate_time: {get_speculate_time - start_time}")
 
                 outputs = self.model(
                     input_ids=raw_output,
-                    attention_mask=attention_mask,
+                    attention_mask=prepared_attention_masks[-1],
                     return_dict=True
                 )
-
                 logits = outputs.logits
                 last_token_logits = logits[0, -num_speculate_tokens:, :]
-
+                
+                # get_logits_time = time.time()
+                # print(f"get_logits_time: {get_logits_time - get_speculate_time}")
 
                 # 转换为概率
                 probabilities = torch.nn.functional.softmax(last_token_logits, dim=-1)
                 cur_tokens=[]
+                break_flag = False
                 for i in range(num_speculate_tokens):
                     # 执行算法，贪婪采样
                     correct_flag = False
                     k,cur_token = self.safe_decoding(tensor1 = probabilities[i-num_speculate_tokens,:],tensor2 =expert_probability_distributions[i],C=C,alpha=alpha)
                     if(cur_token == expert_speculate_ids[i]):
                         correct_flag = True # 可以检查下一步
-                    cur_token = torch.Tensor([cur_token]).to(generated_ids.device)   
+                    cur_token = torch.Tensor([cur_token]).unsqueeze(0).long().to(generated_ids.device)   
                     cur_tokens.append(cur_token) 
-                    # generated_ids = torch.cat([generated_ids, cur_token.unsqueeze(0).long()], dim=-1)
-                    # attention_mask = torch.cat([attention_mask, torch.ones((1, 1), device=attention_mask.device)], dim=1)
                     cur_len += 1
 
                     if(cur_len >= M):
-                        break
-                    if correct_flag == False:
+                        break_flag = True
                         break
                     # 终止条件：遇到EOS或达到最大长度
                     if cur_token.item() == self.tokenizer.eos_token_id:
+                        break_flag = True
+                        break
+                    if correct_flag == False:
                         break
                 extra_match_tokens +=  len(cur_tokens)-1
-                generated_ids = torch.cat([generated_ids, torch.stack(cur_tokens, dim=0)], dim=-1)
-                attention_mask = torch.cat([attention_mask, torch.ones((1, len(cur_tokens)), device=attention_mask.device)], dim=1)
-            print("extra_match_tokens:",extra_match_tokens)
+                generated_ids = torch.cat([generated_ids]+cur_tokens, dim=-1)
+                attention_mask = prepared_attention_masks[-1]
+
+                # print("extra_match_tokens:",extra_match_tokens)
+
+                # validating_end_time = time.time()
+                # print("validating time:",validating_end_time - get_speculate_time)
+                # print(f"step {cur_len} total epoch time: {validating_end_time - start_time},extra match tokens:{extra_match_tokens}")
+                if break_flag:
+                    break
+        # generation_end_time = time.time()
+        # print(f"generation time: {generation_end_time - function_start_time},time per token:{(generation_end_time - function_start_time)/cur_len}")  
+        
         full_texts = [] # the whole conversation texts
         output_texts = [] # the model output part texts
 
@@ -585,5 +623,6 @@ class SafeChat(Chat):
             full_texts.append(full_text)
             output_texts.append(output_text)
 
-        
+        # function_end_time = time.time()
+        # print(f"function time: {function_end_time - function_start_time}")
         return output_texts, full_texts

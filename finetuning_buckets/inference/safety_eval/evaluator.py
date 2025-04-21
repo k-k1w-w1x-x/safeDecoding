@@ -146,7 +146,7 @@ def eval_safety_in_batch(model, prompt_style, tokenizer, num_prefix_tokens = 0, 
     model.eval()
     
 
-    Generator = chat.Chat(model = model, prompt_style = prompt_style, tokenizer = tokenizer,
+    Generator = chat.SafeChat(model = model, prompt_style = prompt_style, tokenizer = tokenizer,
                          init_system_prompt = system_prompt)
     
 
@@ -320,29 +320,32 @@ def eval_safety_in_batch_by_safeDecoding(model, expert_model,prompt_style, token
     else:   
         with open(kwargs.get("cmd_log_path"), "w") as file:
             file.write(f"程序的运行开始于: {start_decoding_time}秒\n")
-
+    if using_speculative:
+        print("using speculative decoding")
+    else:
+        print("not using speculative decoding")
     for batch in tqdm(data_loader):
-    
-       
        with torch.inference_mode():
             
             batch_input_sample = batch
             
             # wxk
+            # start_decoding_time=time.time()
             if not using_speculative:
-                print("not using speculative decoding")
                 output_texts, full_texts = Generator.generate_one_shot_in_batch_by_safeDecoding(inputs = batch_input_sample, accelerator = accelerator,
                                                 max_new_tokens = max_new_tokens, do_sample = do_sample, top_p = top_p, temperature = temperature, 
                                                 use_cache = use_cache, top_k = top_k, repetition_penalty = repetition_penalty, 
                                                 length_penalty = length_penalty, **kwargs)
             else:
-                print("using speculative decoding")
                 output_texts, full_texts = Generator.generate_one_shot_in_batch_by_safeDecoding_with_speculative_decoding(inputs = batch_input_sample, accelerator = accelerator,
                                                 max_new_tokens = max_new_tokens, do_sample = do_sample, top_p = top_p, temperature = temperature, 
                                                 use_cache = use_cache, top_k = top_k, repetition_penalty = repetition_penalty, 
                                                 length_penalty = length_penalty, **kwargs)
             accelerator.wait_for_everyone()
-
+            # end_decoding_time=time.time()
+            # print("decoding time:",end_decoding_time-start_decoding_time)
+            # print("output_texts:",output_texts)
+            # return
 
             
             num_samples = len(output_texts)
@@ -372,7 +375,7 @@ def eval_safety_in_batch_by_safeDecoding(model, expert_model,prompt_style, token
     if kwargs.get("cmd_log_path") is None:
         print("decoding time:",end_decoding_time-start_decoding_time)
     else:
-        with open(kwargs.get("cmd_log_path"), "w") as file:
+        with open(kwargs.get("cmd_log_path"), "a") as file:
             file.write(f"程序的运行时间是: {end_decoding_time-start_decoding_time}秒\n")
     
     results_serialized = torch.tensor( bytearray( json.dumps(results).encode('utf-8') ), dtype=torch.uint8 ).to(accelerator.device)

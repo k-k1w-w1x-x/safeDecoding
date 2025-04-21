@@ -7,8 +7,8 @@ import torch
 
 from finetuning_buckets.models import get_model
 from finetuning_buckets.inference.utility_eval import evaluator
-from datasets import set_caching_enabled
-set_caching_enabled(False)
+from datasets import disable_caching
+disable_caching()
 
 
 @dataclass
@@ -21,7 +21,7 @@ class ScriptArguments:
     save_path: str = field(default=None, metadata={"help": "the save path"})
 
 
-    batch_size_per_device: int = field(default=16, metadata={"help": "the batch size"})
+    batch_size_per_device: int = field(default=1, metadata={"help": "the batch size"})
     max_new_tokens: int = field(default=1024, metadata={"help": "the maximum number of new tokens"})
     do_sample: bool = field(default=True, metadata={"help": "do sample"})
     top_p: float = field(default=0.6, metadata={"help": "top p"})
@@ -31,6 +31,10 @@ class ScriptArguments:
     repetition_penalty: float = field(default=1.0, metadata={"help": "repetition penalty"})
     length_penalty: float = field(default=1.0, metadata={"help": "length penalty"})
 
+
+    safety_expert_model_path: str = field(default=None, metadata={"help": "the path to the model"})
+    using_speculative: bool = field(default=True, metadata={"help": "use speculative decoding"})
+    cmd_log_path: str = field(default=None, metadata={"help": "the path to save the cmd log,which is not same as save path"})
 
 if __name__ == "__main__":
 
@@ -63,8 +67,46 @@ if __name__ == "__main__":
     model, tokenizer = get_model.get_model(model_config.model_name_or_path, model_kwargs, model_family=args.model_family, padding_side="left")
     model.eval()
 
-    evaluator.eval_in_batch(model, args.prompt_style, tokenizer, save_path = args.save_path, batch_size_per_device = args.batch_size_per_device,
-                bench = args.dataset, evaluator = args.evaluator,  #max_eval_samples = 100,
-                max_new_tokens = args.max_new_tokens, 
-                do_sample = args.do_sample, top_p = args.top_p, temperature = args.temperature, use_cache = args.use_cache, top_k = args.top_k,
-                repetition_penalty = args.repetition_penalty, length_penalty = args.length_penalty)
+    # Load safety expert model if path is provided
+    safety_expert_model = None
+    safety_expert_tokenizer = None
+    if args.safety_expert_model_path:
+        safety_expert_model, safety_expert_tokenizer = get_model.get_model(args.safety_expert_model_path, model_kwargs, model_family=args.model_family, padding_side="left")
+        safety_expert_model.eval()
+
+
+
+    if safety_expert_model is not None:
+        evaluator.eval_utility_in_batch_by_safeDecoding(
+            model, safety_expert_model, args.prompt_style, tokenizer,
+            save_path=args.save_path,
+            batch_size_per_device=args.batch_size_per_device,
+            bench=args.dataset,
+            evaluator=args.evaluator,
+            max_new_tokens=args.max_new_tokens,
+            do_sample=args.do_sample,
+            top_p=args.top_p,
+            temperature=args.temperature,
+            use_cache=args.use_cache,
+            top_k=args.top_k,
+            repetition_penalty=args.repetition_penalty,
+            length_penalty=args.length_penalty,
+            using_speculative=args.using_speculative,
+            cmd_log_path=args.cmd_log_path
+        )
+    else:
+        evaluator.eval_in_batch(
+            model, args.prompt_style, tokenizer,
+            save_path=args.save_path,
+            batch_size_per_device=args.batch_size_per_device,
+            bench=args.dataset,
+            evaluator=args.evaluator,
+            max_new_tokens=args.max_new_tokens,
+            do_sample=args.do_sample,
+            top_p=args.top_p,
+            temperature=args.temperature,
+            use_cache=args.use_cache,
+            top_k=args.top_k,
+            repetition_penalty=args.repetition_penalty,
+            length_penalty=args.length_penalty
+        )

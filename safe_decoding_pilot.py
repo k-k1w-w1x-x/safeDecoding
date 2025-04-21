@@ -47,7 +47,6 @@ if __name__ == "__main__":
     parser = HfArgumentParser((ScriptArguments, ModelConfig))
     args, model_config = parser.parse_args_into_dataclasses()
 
-
     torch_dtype = (
         model_config.torch_dtype
         if model_config.torch_dtype in ["auto", None]
