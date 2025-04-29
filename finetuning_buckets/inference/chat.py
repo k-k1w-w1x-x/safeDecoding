@@ -349,15 +349,141 @@ class SafeChat(Chat):
             return None, None  # 若没有满足条件的 k
 
         # 获取最终的交集
-        indices1 = set(torch.topk(tensor1, ans_k).indices.tolist())
-        indices2 = set(torch.topk(tensor2, ans_k).indices.tolist())
+        topk1 = torch.topk(tensor1, ans_k)
+        topk2 = torch.topk(tensor2, ans_k)
+        # print(f"Final top {ans_k} values for tensor1: {topk1.values},indices:{topk1.indices}")
+        # print(f"Final top {ans_k} values for tensor2: {topk2.values},indices:{topk2.indices}")
+        indices1 = set(topk1.indices.tolist())
+        indices2 = set(topk2.indices.tolist())
         intersection = indices1 & indices2
         # print(tensor1.shape,tensor2.shape)
         # 在交集内，找到 (tensor1 - tensor2) 差值最大的下标
         max_index = max(intersection, key=lambda idx: tensor1[idx] +  alpha*(tensor2[idx] - tensor1[idx]))
-        # probabilities = probabilities + alpha*(expert_probabilities.to(probabilities.device) - probabilities)
-        # print(max_index)
+        # if max_index != topk1.indices[0]:
+        #     print(f"max_index is {max_index},prob1 is {tensor1[max_index]},prob2 is {tensor2[max_index]},while topk1.indices[0] is {topk1.indices[0]},prob1 is {tensor1[topk1.indices[0]]},prob2 is {tensor2[topk1.indices[0]]}")
+        #     print(f"max_index value = {tensor1[max_index] +  alpha*(tensor2[max_index] - tensor1[max_index])},while topk1.indices[0] value = {tensor1[topk1.indices[0]] +  alpha*(tensor2[topk1.indices[0]] - tensor1[topk1.indices[0]])}")
         return ans_k, max_index
+    def safe_decoding_new(self,tensor1, tensor2,C,alpha):
+        tensor2=tensor2.to(tensor1.device)
+        n = min(tensor1.size(0), tensor2.size(0))
+        topk1 = torch.topk(tensor1, C)
+        indices1 = set(topk1.indices.tolist())
+        indices2 = set([i for i in range(n)])
+        intersection = indices1 & indices2
+        max_index = max(intersection, key=lambda idx: tensor1[idx] +  alpha*(tensor2[idx] - tensor1[idx]))
+        return C, max_index
+    
+    def safe_decoding_new2(self,tensor1, tensor2,C,alpha):
+        tensor2=tensor2.to(tensor1.device)
+        n = min(tensor1.size(0), tensor2.size(0))
+        left, right = 1, n
+
+        # 获取最终的交集
+        topk1 = torch.topk(tensor1, C)
+        topk2 = torch.topk(tensor2, C)
+        # print(f"Final top {ans_k} values for tensor1: {topk1.values},indices:{topk1.indices}")
+        # print(f"Final top {ans_k} values for tensor2: {topk2.values},indices:{topk2.indices}")
+        indices1 = set(topk1.indices.tolist())
+        indices2 = set(topk2.indices.tolist())
+        intersection = indices1 | indices2
+        # print(tensor1.shape,tensor2.shape)
+        # 在交集内，找到 (tensor1 - tensor2) 差值最大的下标
+        max_index = max(intersection, key=lambda idx: tensor1[idx] +  alpha*(tensor2[idx] - tensor1[idx]))
+        return C, max_index
+    def safe_decoding_new3(self,tensor1, tensor2,C,alpha):
+        tensor2=tensor2.to(tensor1.device)
+        n = min(tensor1.size(0), tensor2.size(0))
+        topk1 = torch.topk(tensor1, C)
+        topk2 = torch.topk(tensor2, C)
+        indices1 = topk1.indices.tolist()
+        indices2 = topk2.indices.tolist()
+        if indices2[0] not in indices1 or indices1[0] not in indices2:
+            return C, indices1[0]
+        else:
+            return self.safe_decoding(tensor1, tensor2,C,alpha)
+    def safe_decoding_new4(self,tensor1, tensor2,C,alpha):
+        tensor2=tensor2.to(tensor1.device)
+        n = min(tensor1.size(0), tensor2.size(0))
+        left, right = 1, n
+        ans_k = None
+        while left <= right:
+            mid = (left + right) // 2
+            indices1 = set(torch.topk(tensor1, mid).indices.tolist())
+            indices2 = set(torch.topk(tensor2, mid).indices.tolist())
+            if len(indices1 & indices2) >= C:
+                ans_k = mid
+                right = mid - 1
+            else:
+                left = mid + 1
+
+        if ans_k is None:
+            return None, None  # 若没有满足条件的 k
+
+        # 获取最终的交集
+        topk1 = torch.topk(tensor1, ans_k)
+        topk2 = torch.topk(tensor2, ans_k)
+        indices1 = topk1.indices.tolist()
+        indices2 = topk2.indices.tolist()
+        if indices2[0] not in indices1 or indices1[0] not in indices2:
+            flag=0
+            if indices2[0] not in indices1:
+                flag=-1
+            if indices1[0] not in indices2:
+                flag=-2
+            if indices2[0] not in indices1 and indices1[0] not in indices2:
+                flag=0
+            return flag, indices1[0]
+        else:   
+            indices1 = set(indices1)
+            indices2 = set(indices2)
+            intersection = indices1 & indices2
+            max_index = max(intersection, key=lambda idx: tensor1[idx] +  alpha*(tensor2[idx] - tensor1[idx]))
+            return 1, max_index
+
+    def safe_decoding_new5(self,tensor1, tensor2,C,alpha):
+        tensor2=tensor2.to(tensor1.device)
+        n = min(tensor1.size(0), tensor2.size(0))
+        left, right = 1, n
+        ans_k = None
+        while left <= right:
+            mid = (left + right) // 2
+            indices1 = set(torch.topk(tensor1, mid).indices.tolist())
+            indices2 = set(torch.topk(tensor2, mid).indices.tolist())
+            if len(indices1 & indices2) >= C:
+                ans_k = mid
+                right = mid - 1
+            else:
+                left = mid + 1
+
+        if ans_k is None:
+            return None, None  # 若没有满足条件的 k
+
+        # 获取最终的交集
+        topk1 = torch.topk(tensor1, ans_k)
+        topk2 = torch.topk(tensor2, ans_k)
+        indices1 = topk1.indices.tolist()
+        indices2 = topk2.indices.tolist()
+        if indices1[0] not in indices2:
+            flag=-2
+            if indices2[0] not in indices1:
+                flag=0
+            print(f"unmatch:indices2:{indices2[0]}: {self.tokenizer.decode(indices2[0])},indices1:{indices1[0]}: {self.tokenizer.decode(indices1[0])},flag:{flag}")
+            if indices2[0] == 306:              
+                sorted_indices1 = torch.argsort(tensor1, descending=True)
+                rank_306 = (sorted_indices1 == 306).nonzero().item() + 1
+                print(f"Token 306 rank in tensor1: {rank_306}")
+                print(f"Token 306 value in tensor1: {tensor1[306]}")
+                print(f"Top ans_k:{ans_k} values in tensor1: {tensor1[sorted_indices1[:ans_k]]}")
+                print(f"Top ans_k:{ans_k} indices in tensor1: {sorted_indices1[:ans_k]}")
+        
+            return flag, indices1[0]
+        else:   
+            indices1 = set(indices1)
+            indices2 = set(indices2)
+            intersection = indices1 & indices2
+            max_index = max(intersection, key=lambda idx: tensor1[idx] +  alpha*(tensor2[idx] - tensor1[idx]))
+            return 1, max_index
+           
     def generate_one_shot_in_batch_by_safeDecoding(self, inputs, accelerator, max_new_tokens = 1024, 
                  do_sample = True, top_p = 0.9, temperature = 0.6, use_cache = True, top_k = 50,
                  repetition_penalty = 1.0, length_penalty = 1.0,C=5,M=1024,alpha=3.0, **kwargs):
@@ -427,7 +553,7 @@ class SafeChat(Chat):
             get_probabilities_time = time.time()
             print(f"get_probabilities_time: {get_probabilities_time - start_time}")
             # 执行算法，贪婪采样
-            k,next_token = self.safe_decoding(tensor1 = probabilities,tensor2 = expert_probabilities,C=C,alpha=alpha)
+            k,next_token = self.safe_decoding_new(tensor1 = probabilities,tensor2 = expert_probabilities,C=C,alpha=alpha)
             get_next_token_time = time.time()
             print(f"get_next_token_time: {get_next_token_time - get_probabilities_time}")   
             next_token = torch.Tensor([next_token]).to(generated_ids.device)
@@ -484,7 +610,7 @@ class SafeChat(Chat):
     
     def generate_one_shot_in_batch_by_safeDecoding_with_speculative_decoding(self, inputs, accelerator, max_new_tokens = 1024, 
                 do_sample = True, top_p = 0.9, temperature = 0.6, use_cache = True, top_k = 50,
-                repetition_penalty = 1.0, length_penalty = 1.0,C=5,M=1024,alpha=0.0001, **kwargs):
+                repetition_penalty = 1.0, length_penalty = 1.0,C=10,M=1024,alpha=0.5, **kwargs):
 
    
         M = max_new_tokens
@@ -509,13 +635,16 @@ class SafeChat(Chat):
         generated_ids = model_inputs['input_ids']
         attention_mask = model_inputs['attention_mask']
         
-        num_speculate_tokens = 10
+        num_speculate_tokens = 7
+        threshold = 0.5
         warning_flag1 = False
 
         with torch.no_grad():
             # 初始化生成过程
             cur_len=0
-            extra_match_tokens=0
+            # extra_match_tokens=0
+            is_token_match_log=[]
+            is_safe_decoding_log=[]
             while cur_len < M:
                 # start_time = time.time()
                 expert_probability_distributions=[]
@@ -561,7 +690,7 @@ class SafeChat(Chat):
 
                 outputs = self.model(
                     input_ids=raw_output,
-                    attention_mask=prepared_attention_masks[-1],
+                    attention_mask=prepared_attention_masks[-2],
                     return_dict=True
                 )
                 logits = outputs.logits
@@ -577,9 +706,34 @@ class SafeChat(Chat):
                 for i in range(num_speculate_tokens):
                     # 执行算法，贪婪采样
                     correct_flag = False
-                    k,cur_token = self.safe_decoding(tensor1 = probabilities[i-num_speculate_tokens,:],tensor2 =expert_probability_distributions[i],C=C,alpha=alpha)
+                    k,cur_token = self.safe_decoding_new5(tensor1 = probabilities[i-num_speculate_tokens,:],tensor2 =expert_probability_distributions[i],C=C,alpha=alpha)
+                    is_safe_decoding_log.append(k)
                     if(cur_token == expert_speculate_ids[i]):
                         correct_flag = True # 可以检查下一步
+                        is_token_match_log.append(1) # 这一步match了
+                    else:
+                        is_token_match_log.append(0)
+#---------------------------------------------------------new6
+                    # if len(is_token_match_log) % num_speculate_tokens == 0:
+                    #     if(sum(is_token_match_log[-num_speculate_tokens:])/ num_speculate_tokens < threshold):
+                    #         alpha = 1.0
+                    #     else:
+                    #         alpha = 0.5
+                    #     print(f"cur_len:{cur_len},alpha:{alpha}")
+#---------------------------------------------------------
+#---------------------------------------------------------new7
+                    if len(is_token_match_log) % num_speculate_tokens == 0:
+                        if(sum(is_token_match_log[-num_speculate_tokens:])/ num_speculate_tokens < threshold):
+                            next_alpha = 1.0
+                        else:
+                            next_alpha = 0.5
+                        if next_alpha == alpha:
+                            threshold -= max_new_tokens//num_speculate_tokens * 0.5
+                        else:
+                            threshold = 0.5
+                        alpha = next_alpha
+                        print(f"cur_len:{cur_len},alpha:{alpha},threshold:{threshold}")
+#---------------------------------------------------------                        
                     cur_token = torch.Tensor([cur_token]).unsqueeze(0).long().to(generated_ids.device)   
                     cur_tokens.append(cur_token) 
                     cur_len += 1
@@ -593,9 +747,9 @@ class SafeChat(Chat):
                         break
                     if correct_flag == False:
                         break
-                extra_match_tokens +=  len(cur_tokens)-1
+                # extra_match_tokens +=  len(cur_tokens)-1
                 generated_ids = torch.cat([generated_ids]+cur_tokens, dim=-1)
-                attention_mask = prepared_attention_masks[-1]
+                attention_mask = prepared_attention_masks[len(cur_tokens)]
 
                 # print("extra_match_tokens:",extra_match_tokens)
 
@@ -606,7 +760,29 @@ class SafeChat(Chat):
                     break
         # generation_end_time = time.time()
         # print(f"generation time: {generation_end_time - function_start_time},time per token:{(generation_end_time - function_start_time)/cur_len}")  
+            # Split the list into groups of `group_size`
+        groups = [is_token_match_log[i:i + num_speculate_tokens] for i in range(0, len(is_token_match_log), num_speculate_tokens)]
         
+        # Calculate the ratio of 1's in each group
+        ones_ratio = [sum(group) / len(group) for group in groups]
+        print("speculative matching :",ones_ratio)
+        print("safe decoding:",is_safe_decoding_log)
+        # print(generated_ids.shape,attention_mask.shape)
+        if max_new_tokens-M > 0:
+            generated_ids = self.model.generate(
+                input_ids = generated_ids,
+                attention_mask = attention_mask,
+                max_new_tokens=(max_new_tokens-M),
+                do_sample=do_sample,
+                top_p=top_p,
+                temperature=temperature,
+                use_cache=use_cache,
+                top_k=top_k,
+                repetition_penalty=repetition_penalty,
+                length_penalty=length_penalty,
+                stopping_criteria = self.stopping_criteria,
+                **kwargs
+            )
         full_texts = [] # the whole conversation texts
         output_texts = [] # the model output part texts
 

@@ -264,7 +264,7 @@ def eval_safety_in_batch_by_safeDecoding(model, expert_model,prompt_style, token
                 system_prompt = None, input_template = None, output_header = None, 
                 max_new_tokens = 512, 
                 do_sample = True, top_p = 0.9, temperature = 0.6, use_cache = True, top_k = 50,
-                repetition_penalty = 1.0, length_penalty = 1.0, using_speculative = True,**kwargs):
+                repetition_penalty = 1.0, length_penalty = 1.0, using_speculative = True,cmd_log_path=None,**kwargs):
     
     accelerator = Accelerator()
 
@@ -315,10 +315,10 @@ def eval_safety_in_batch_by_safeDecoding(model, expert_model,prompt_style, token
     results = []
     cnt = 0
     start_decoding_time=time.time()
-    if kwargs.get("cmd_log_path") is None:
+    if cmd_log_path is None:
         print("decoding start time:",start_decoding_time,", not save cmd log")
     else:   
-        with open(kwargs.get("cmd_log_path"), "w") as file:
+        with open(cmd_log_path, "w") as file:
             file.write(f"程序的运行开始于: {start_decoding_time}秒\n")
     if using_speculative:
         print("using speculative decoding")
@@ -372,10 +372,10 @@ def eval_safety_in_batch_by_safeDecoding(model, expert_model,prompt_style, token
 
 
     end_decoding_time=time.time()
-    if kwargs.get("cmd_log_path") is None:
+    if cmd_log_path is None:
         print("decoding time:",end_decoding_time-start_decoding_time)
     else:
-        with open(kwargs.get("cmd_log_path"), "a") as file:
+        with open(cmd_log_path, "a") as file:
             file.write(f"程序的运行时间是: {end_decoding_time-start_decoding_time}秒\n")
     
     results_serialized = torch.tensor( bytearray( json.dumps(results).encode('utf-8') ), dtype=torch.uint8 ).to(accelerator.device)

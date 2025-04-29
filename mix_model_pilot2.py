@@ -92,11 +92,6 @@ if __name__ == "__main__":
     model.eval()
     safety_expert_model.eval()
 
-    # bat = safety_expert_model.generate(input_ids=inputs['input_ids'],do_sample=False,max_new_tokens=num_speculate_tokens)
-    # generated_token = bat[0, inputs['input_ids'].shape[-1]:]
-    # print(tokenizer.decode(generated_token[0], skip_special_tokens=True))
-    # print(input_ids,bat,generated_token)
-    # exit()
     start_time = time.time()
     print("start decoding...")
     with torch.no_grad():
