@@ -636,8 +636,12 @@ class SafeChat(Chat):
         attention_mask = model_inputs['attention_mask']
         
         num_speculate_tokens = 7
-        threshold = 0.5
-        warning_flag1 = False
+        base_threshold = 0.6
+        threshold = 0.6
+        alpha1 = 3.0
+        alpha2 = 0.5
+        alpha = alpha2
+        decoding_mode = 1
 
         with torch.no_grad():
             # 初始化生成过程
@@ -706,7 +710,10 @@ class SafeChat(Chat):
                 for i in range(num_speculate_tokens):
                     # 执行算法，贪婪采样
                     correct_flag = False
-                    k,cur_token = self.safe_decoding_new5(tensor1 = probabilities[i-num_speculate_tokens,:],tensor2 =expert_probability_distributions[i],C=C,alpha=alpha)
+                    if decoding_mode == 1:
+                        k,cur_token = self.safe_decoding_new5(tensor1 = probabilities[i-num_speculate_tokens,:],tensor2 =expert_probability_distributions[i],C=C,alpha=alpha)
+                    else:
+                        k,cur_token = self.safe_decoding_new2(tensor1 = probabilities[i-num_speculate_tokens,:],tensor2 =expert_probability_distributions[i],C=C,alpha=alpha)
                     is_safe_decoding_log.append(k)
                     if(cur_token == expert_speculate_ids[i]):
                         correct_flag = True # 可以检查下一步
@@ -722,18 +729,31 @@ class SafeChat(Chat):
                     #     print(f"cur_len:{cur_len},alpha:{alpha}")
 #---------------------------------------------------------
 #---------------------------------------------------------new7
+                    # if len(is_token_match_log) % num_speculate_tokens == 0:
+                    #     if(sum(is_token_match_log[-num_speculate_tokens:])/ num_speculate_tokens < threshold):
+                    #         next_alpha = alpha1
+                    #     else:
+                    #         next_alpha = alpha2
+                    #     if next_alpha == alpha:
+                    #         threshold = max(threshold - 0.1,0)
+                    #     else:
+                    #         threshold = base_threshold
+                    #     alpha = next_alpha
+                    #     print(f"cur_len:{cur_len},alpha:{alpha},threshold:{threshold}")
+#---------------------------------------------------------
+#---------------------------------------------------------new8
                     if len(is_token_match_log) % num_speculate_tokens == 0:
                         if(sum(is_token_match_log[-num_speculate_tokens:])/ num_speculate_tokens < threshold):
-                            next_alpha = 1.0
+                            next_decoding_mode = 2
                         else:
-                            next_alpha = 0.5
-                        if next_alpha == alpha:
-                            threshold -= max_new_tokens//num_speculate_tokens * 0.5
+                            next_decoding_mode = 1
+                        if next_decoding_mode == decoding_mode:
+                            threshold = max(threshold - 0.1,0)
                         else:
-                            threshold = 0.5
-                        alpha = next_alpha
+                            threshold = base_threshold
+                        decoding_mode = next_decoding_mode
                         print(f"cur_len:{cur_len},alpha:{alpha},threshold:{threshold}")
-#---------------------------------------------------------                        
+#---------------------------------------------------------                          
                     cur_token = torch.Tensor([cur_token]).unsqueeze(0).long().to(generated_ids.device)   
                     cur_tokens.append(cur_token) 
                     cur_len += 1
@@ -767,7 +787,7 @@ class SafeChat(Chat):
         ones_ratio = [sum(group) / len(group) for group in groups]
         print("speculative matching :",ones_ratio)
         print("safe decoding:",is_safe_decoding_log)
-        # print(generated_ids.shape,attention_mask.shape)
+
         if max_new_tokens-M > 0:
             generated_ids = self.model.generate(
                 input_ids = generated_ids,
