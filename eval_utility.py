@@ -26,7 +26,7 @@ class ScriptArguments:
     do_sample: bool = field(default=True, metadata={"help": "do sample"})
     top_p: float = field(default=0.6, metadata={"help": "top p"})
     temperature: float = field(default=0.9, metadata={"help": "temperature"})
-    use_cache: bool = field(default=True, metadata={"help": "use cache"})
+    use_cache: bool = field(default=False, metadata={"help": "use cache"})
     top_k: int = field(default=50, metadata={"help": "top k"})
     repetition_penalty: float = field(default=1.0, metadata={"help": "repetition penalty"})
     length_penalty: float = field(default=1.0, metadata={"help": "length penalty"})
